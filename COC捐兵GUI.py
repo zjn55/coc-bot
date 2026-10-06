@@ -140,12 +140,6 @@ class App:
         def find_first_colored(ys):
             """扫描整页，返回第一个彩色卡片坐标，没有返回None"""
             img = screencap()
-            # 画取色框存debug图
-            debug = img.copy()
-            for x in col_x:
-                for y in [row1_y, row2_y, row3_y]:
-                    cv2.rectangle(debug, (x-25, y-35), (x+25, y), (0, 255, 0), 2)
-            cv2.imencode('.png', debug)[1].tofile(os.path.join(BASE_DIR, "_debug_grid.png"))
             for x in col_x:
                 for y in ys:
                     if not self.is_card_grey(img, x, y):
