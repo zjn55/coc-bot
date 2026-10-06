@@ -124,22 +124,28 @@ class App:
             return False
 
     def is_card_grey(self, img, x, y):
-        """判断卡片是否灰色，用最大饱和度判断"""
+        """判断卡片是否灰色，用平均饱和度判断"""
         hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
         region = hsv[y-35:y, x-25:x+25]
-        max_s = region[:,:,1].max()
-        return max_s < 40
+        avg_s = region[:,:,1].mean()
+        return avg_s < 30
 
     def do_donate(self):
         """循环捐兵，直到页面关闭"""
         row1_y = 300
         row2_y = 480
-        row3_y = 680
-        col_x = [860, 995, 1130, 1265, 1400, 1535, 1670]
+        row3_y = 730
+        col_x = [855, 990, 1125, 1260, 1395, 1530, 1665]
 
         def find_first_colored(ys):
             """扫描整页，返回第一个彩色卡片坐标，没有返回None"""
             img = screencap()
+            # 画取色框存debug图
+            debug = img.copy()
+            for x in col_x:
+                for y in [row1_y, row2_y, row3_y]:
+                    cv2.rectangle(debug, (x-25, y-35), (x+25, y), (0, 255, 0), 2)
+            cv2.imencode('.png', debug)[1].tofile(os.path.join(BASE_DIR, "_debug_grid.png"))
             for x in col_x:
                 for y in ys:
                     if not self.is_card_grey(img, x, y):
@@ -160,30 +166,30 @@ class App:
                     break
             return True
 
-        # 兵种两行：看→滑→看→滑→看
-        for i in range(3):
+        # 兵种两行：看→滑→看→滑→看→滑→看→滑→看（滑4次）
+        for i in range(5):
             if not self.running: return
             while self.running:
                 pos = find_first_colored([row1_y, row2_y])
                 if not pos: break
                 self.log_msg(f"点兵种卡片 ({pos[0]},{pos[1]})")
                 if not click_card(pos[0], pos[1], 5): return
-            if i < 2:
+            if i < 4:
                 self.log_msg("兵种区域右滑...")
-                adb_shell(["input", "swipe", "1600", "390", "800", "390", "300"])
+                adb_shell(["input", "swipe", "1500", "390", "892", "390", "500"])
                 time.sleep(0.8)
 
-        # 法术行：看→滑→看→滑→看
-        for i in range(3):
+        # 法术行：看→滑→看→滑→看→滑→看（滑3次）
+        for i in range(4):
             if not self.running: return
             while self.running:
                 pos = find_first_colored([row3_y])
                 if not pos: break
                 self.log_msg(f"点法术卡片 ({pos[0]},{pos[1]})")
                 if not click_card(pos[0], pos[1], 3): return
-            if i < 2:
+            if i < 3:
                 self.log_msg("法术区域右滑...")
-                adb_shell(["input", "swipe", "1600", "680", "800", "680", "300"])
+                adb_shell(["input", "swipe", "1500", "730", "892", "730", "500"])
                 time.sleep(0.8)
 
     def detect_scene(self, img):
@@ -349,9 +355,20 @@ class App:
                     self.log_msg("捐兵结束，等2秒再继续...")
                     time.sleep(2)
                 else:
-                    no_request_count += 1
-                    self.log_msg("无请求，10秒后再查...")
-                    time.sleep(10)
+                    # 没有增援按钮，检测感叹号
+                    alert_top = find("alert_top.png", img, threshold=0.8)
+                    alert_bottom = find("alert_bottom.png", img, threshold=0.8)
+                    if alert_top:
+                        self.log_msg(f">>> 发现上面感叹号！({alert_top[0]},{alert_top[1]})")
+                        tap(alert_top[0], alert_top[1])
+                        time.sleep(2)
+                    elif alert_bottom:
+                        self.log_msg(f">>> 发现下面感叹号！({alert_bottom[0]},{alert_bottom[1]})")
+                        tap(alert_bottom[0], alert_bottom[1])
+                        time.sleep(2)
+                    else:
+                        self.log_msg("无请求，10秒后再查...")
+                        time.sleep(10)
 
         except Exception as e:
             self.log_msg(f"[错误] {e}")
