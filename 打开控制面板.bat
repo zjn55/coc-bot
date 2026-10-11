@@ -1,3 +1,18 @@
 @echo off
-cd /d "C:\Users\zjn58\Desktop\COC曇條"
-"C:\Users\zjn58\AppData\Local\Programs\Python\Python313\python.exe" "C:\Users\zjn58\Desktop\COC曇條\COC曇條GUI.py"
+cd /d "%~dp0"
+
+where python >nul 2>nul
+if errorlevel 1 goto nopython
+
+python -c "import cv2, numpy" >nul 2>nul
+if errorlevel 1 pip install opencv-python numpy pywin32
+
+python "COC曇條GUI.py"
+pause
+exit
+
+:nopython
+echo [ERROR] Python not found!
+echo Please install Python 3.10+ and check Add Python to PATH
+echo Download: https://www.python.org/downloads/
+pause

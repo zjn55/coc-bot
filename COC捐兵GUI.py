@@ -26,17 +26,25 @@ def cv_imread(path):
 
 
 def screencap():
-    for attempt in range(5):
+    for attempt in range(8):
         try:
             r = subprocess.run([ADB, "-s", DEVICE, "shell", "screencap", "-p", "/sdcard/_s.png"],
-                              capture_output=True, timeout=20)
+                              capture_output=True, timeout=30)
             tmp = os.path.join(BASE_DIR, "_tmp.png")
             subprocess.run([ADB, "-s", DEVICE, "pull", "/sdcard/_s.png", tmp],
-                           capture_output=True, timeout=20)
-            return cv_imread(tmp)
+                           capture_output=True, timeout=30)
+            img = cv_imread(tmp)
+            if img is not None:
+                return img
         except Exception:
-            time.sleep(2)
-    raise Exception("screencap连续5次失败")
+            pass
+        time.sleep(2)
+    # 重试一次 adb 连接后返回 None
+    try:
+        subprocess.run([ADB, "-s", DEVICE, "shell", "echo ok"], timeout=15, capture_output=True)
+    except Exception:
+        pass
+    return None
 
 
 def adb_shell(cmd):
@@ -52,12 +60,45 @@ def find(tpl_name, img=None, threshold=THRESHOLD):
     if img is None:
         img = screencap()
     tpl = cv_imread(os.path.join(TEMPLATE_DIR, tpl_name))
+    if tpl is None or img is None:
+        return None
     h, w = tpl.shape[:2]
+    if h == 0 or w == 0 or h > img.shape[0] or w > img.shape[1]:
+        return None
     res = cv2.matchTemplate(img, tpl, cv2.TM_CCOEFF_NORMED)
     _, maxv, _, maxl = cv2.minMaxLoc(res)
     if maxv >= threshold:
         return (maxl[0] + w // 2, maxl[1] + h // 2, maxv)
     return None
+
+
+def find_all(tpl_name, img=None, threshold=THRESHOLD):
+    """返回所有匹配位置列表，[(x,y,score),...]，用NMS去重"""
+    if img is None:
+        img = screencap()
+    tpl = cv_imread(os.path.join(TEMPLATE_DIR, tpl_name))
+    if tpl is None or img is None:
+        return []
+    h, w = tpl.shape[:2]
+    if h == 0 or w == 0 or h > img.shape[0] or w > img.shape[1]:
+        return []
+    res = cv2.matchTemplate(img, tpl, cv2.TM_CCOEFF_NORMED)
+    loc = np.where(res >= threshold)
+    pts = []
+    for x, y in zip(*loc[::-1]):
+        pts.append((x, y, float(res[y, x])))
+    # 非极大值抑制：按分数降序，去除重叠框
+    pts.sort(key=lambda p: -p[2])
+    picked = []
+    for x, y, s in pts:
+        ok = True
+        for px, py, _ in picked:
+            if abs(x - px) < w * 0.6 and abs(y - py) < h * 0.6:
+                ok = False
+                break
+        if ok:
+            picked.append((x, y, s))
+    return [(x + w // 2, y + h // 2, s) for x, y, s in picked]
 
 
 # ============ GUI ============
@@ -94,6 +135,16 @@ class App:
         self.cmb_spells = ttk.Combobox(row, width=3, values=[str(i) for i in range(0,8)], state="readonly")
         self.cmb_spells.set("1")
         self.cmb_spells.pack(side=tk.LEFT, padx=5)
+
+        row2 = tk.Frame(root)
+        row2.pack(pady=5)
+        tk.Label(row2, text="战斗超时(秒):", font=("微软雅黑", 10)).pack(side=tk.LEFT)
+        self.entry_timeout = tk.Entry(row2, width=5, font=("微软雅黑", 10))
+        self.entry_timeout.insert(0, "60")
+        self.entry_timeout.pack(side=tk.LEFT, padx=5)
+        self.var_beep = tk.BooleanVar(value=True)
+        tk.Checkbutton(row2, text="未知场景响铃", variable=self.var_beep,
+                       font=("微软雅黑", 10)).pack(side=tk.LEFT, padx=10)
 
         # 按钮
         self.btn_start = tk.Button(root, text="启动捐兵脚本", font=("微软雅黑", 14),
@@ -224,6 +275,10 @@ class App:
                 time.sleep(10)
                 continue
             pos = find("find_match.png", img, threshold=0.8)
+            if not pos:
+                pos = find("另一个进攻.png", img, threshold=0.8)
+            if not pos:
+                pos = find("前往战斗.png", img, threshold=0.8)
             if pos:
                 time.sleep(0.5)
                 tap(pos[0], pos[1])
@@ -245,6 +300,11 @@ class App:
                 tap(p[0], p[1])
                 time.sleep(10)
                 continue
+            # 若已直接进入战斗准备页，跳过选常规战
+            if find("battle_ready.png", img, threshold=0.8):
+                self.log_msg("已在战斗准备页，跳过选常规战")
+                found = True
+                break
             pos = find("normal_battle.png", img, threshold=0.8)
             if pos:
                 time.sleep(0.5)
@@ -256,38 +316,7 @@ class App:
             recover()
             return
 
-        # 4: 点搜索对手
-        self.log_msg("点搜索对手...")
-        found = False
-        for _ in range(15):
-            if not self.running: return
-            img = screencap()
-            if find("reload.png", img, threshold=0.8):
-                p = find("reload.png", img)
-                tap(p[0], p[1])
-                time.sleep(10)
-                continue
-            if find("battle_ready.png", img, threshold=0.8):
-                found = True
-                break
-            pos = find("search_enemy.png", img, threshold=0.8)
-            if pos:
-                time.sleep(0.5)
-                tap(pos[0], pos[1])
-                time.sleep(1)
-                img = screencap()
-                confirm = find("confirm.png", img, threshold=0.8)
-                if confirm:
-                    time.sleep(0.5)
-                    tap(confirm[0], confirm[1])
-                found = True
-                break
-            time.sleep(1)
-        if not found:
-            recover()
-            return
-
-        # 等匹配完成，点进攻
+        # 点常规战即触发搜索匹配，直接等匹配完成，点进攻
         self.log_msg("等待匹配，点进攻...")
         for _ in range(60):
             if not self.running: return
@@ -388,10 +417,10 @@ class App:
             for _ in range(10):
                 if card_is_gray(cx, cy): break
                 tap(cx, cy)
-                time.sleep(0.1)
+                time.sleep(0.05)
                 for p in deploy_points:
-                    adb_shell(["input", "swipe", str(p[0]), str(p[1]), str(p[0]), str(p[1]), "300"])
-                    time.sleep(0.05)
+                    adb_shell(["input", "swipe", str(p[0]), str(p[1]), str(p[0]), str(p[1]), "200"])
+                    time.sleep(0.03)
                 if not self.running: return
 
         # 工程机械：只放一次，第一个点
@@ -427,14 +456,14 @@ class App:
                     time.sleep(0.1)
                 if not self.running: return
 
-        # 等战斗结束：60秒内每7秒检测一次，超时点放弃
-        self.log_msg("等待战斗结束（60秒超时）...")
+        # 等战斗结束：超时后点放弃
+        timeout = int(self.entry_timeout.get())
+        self.log_msg(f"等待战斗结束（{timeout}秒超时）...")
         ended = False
-        for i in range(60):
+        for i in range(timeout):
             if not self.running: return
             if i % 7 == 0:
                 img = screencap()
-                self.log_msg(f"等待战斗结束... 剩余{60-i}秒")
                 # 1.奖励弹窗
                 reward_pos = find("选择一项奖励.png", img, threshold=0.8)
                 if reward_pos:
@@ -485,6 +514,18 @@ class App:
                 if end_pos:
                     tap(end_pos[0], end_pos[1])
                     time.sleep(1)
+                    self.log_msg("点结束战斗，找确定按钮...")
+                    # 专门等确定按钮
+                    for _ in range(10):
+                        if not self.running: return
+                        img = screencap()
+                        confirm_pos = find("confirm.png", img, threshold=0.8)
+                        if confirm_pos:
+                            tap(confirm_pos[0], confirm_pos[1])
+                            self.log_msg("已点确定")
+                            time.sleep(2)
+                            break
+                        time.sleep(1)
                     continue
                 # 5.放弃
                 cancel_pos = find("放弃.png", img, threshold=0.8)
@@ -591,12 +632,14 @@ class App:
                 tap(pos[0], pos[1] - 10)
                 time.sleep(5)
             else:
-                self.log_msg("  场景未知！响铃警报...")
-                try:
-                    import winsound
-                    winsound.Beep(1200, 800)
-                except:
-                    pass
+                self.log_msg("  场景未知！")
+                if self.var_beep.get():
+                    self.log_msg("  响铃警报...")
+                    try:
+                        import winsound
+                        winsound.Beep(1200, 800)
+                    except:
+                        pass
                 time.sleep(3)
 
     def navigate_to_chat(self):
@@ -672,19 +715,47 @@ class App:
             # ===== 主循环：看捐兵→打资源→循环 =====
             self.log_msg("开始主循环...")
             while self.running:
-                # 1. 去聊天看有没有人要兵
+                # 1. 去聊天，循环捐兵直到没有请求
                 self.navigate_to_chat()
                 if not self.running: break
 
-                img = screencap()
-                pos = find("reinforce_btn.png", img, threshold=0.8)
-                if pos:
-                    self.log_msg(f">>> 发现增援按钮！({pos[0]},{pos[1]})")
+                # 捐兵循环：捐完再找增援/箭头，直到没有
+                while self.running:
+                    img = screencap()
+                    # 优先级：增援按钮 > 上箭头 > 下箭头
+                    pos = find("reinforce_btn.png", img, threshold=0.8)
+                    if pos:
+                        self.log_msg(f">>> 发现增援按钮！({pos[0]},{pos[1]})")
+                    else:
+                        pos = find("alert_top.png", img, threshold=0.8)
+                        if pos:
+                            self.log_msg(f">>> 发现上箭头！({pos[0]},{pos[1]})")
+                        else:
+                            pos = find("alert_bottom.png", img, threshold=0.8)
+                            if pos:
+                                self.log_msg(f">>> 发现下箭头！({pos[0]},{pos[1]})")
+                    if not pos:
+                        self.log_msg("无捐兵请求，结束捐兵")
+                        break
                     tap(pos[0], pos[1])
                     time.sleep(2)
+                    # 如果点的是箭头，需再检测增援按钮
+                    if not find("reinforce_btn.png", img, threshold=0.8):
+                        self.log_msg("检测增援按钮...")
+                        for _ in range(8):
+                            if not self.running: break
+                            img = screencap()
+                            rbtn = find("reinforce_btn.png", img, threshold=0.8)
+                            if rbtn:
+                                self.log_msg(f">>> 点增援按钮 ({rbtn[0]},{rbtn[1]})")
+                                tap(rbtn[0], rbtn[1])
+                                time.sleep(2)
+                                break
+                            time.sleep(1)
+                    # 等待捐兵页面出现，不出现就重新点增援按钮
                     self.log_msg("等待增援页面加载...")
                     page_ok = False
-                    for i in range(10):
+                    for i in range(12):
                         if not self.running: break
                         img2 = screencap()
                         if find("reload.png", img2, threshold=0.8):
@@ -698,11 +769,17 @@ class App:
                             self.do_donate()
                             page_ok = True
                             break
+                        if i >= 2:
+                            # 捐兵页没出现，重新点增援按钮
+                            img2 = screencap()
+                            rbtn = find("reinforce_btn.png", img2, threshold=0.8)
+                            if rbtn:
+                                self.log_msg("捐兵页未出现，重新点增援")
+                                tap(rbtn[0], rbtn[1])
+                                time.sleep(1)
                         time.sleep(1)
                     self.log_msg("捐兵结束，等2秒...")
                     time.sleep(2)
-                else:
-                    self.log_msg("无捐兵请求")
 
                 # 2. 回主界面打资源
                 self.back_to_game_main()
